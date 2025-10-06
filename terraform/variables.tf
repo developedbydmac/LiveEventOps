@@ -92,3 +92,41 @@ variable "alert_email" {
   type        = string
   default     = "admin@liveeventops.com"
 }
+
+# Key Vault configuration variables
+variable "key_vault_soft_delete_retention_days" {
+  description = "Number of days to retain soft-deleted Key Vault items"
+  type        = number
+  default     = 7
+  validation {
+    condition     = var.key_vault_soft_delete_retention_days >= 7 && var.key_vault_soft_delete_retention_days <= 90
+    error_message = "Soft delete retention days must be between 7 and 90."
+  }
+}
+
+variable "key_vault_purge_protection_enabled" {
+  description = "Enable purge protection for Key Vault (recommended for production)"
+  type        = bool
+  default     = false
+}
+
+variable "key_vault_network_default_action" {
+  description = "Default action for Key Vault network access rules (Allow or Deny)"
+  type        = string
+  default     = "Allow"
+  validation {
+    condition     = contains(["Allow", "Deny"], var.key_vault_network_default_action)
+    error_message = "Key Vault network default action must be either 'Allow' or 'Deny'."
+  }
+}
+
+variable "additional_key_vault_access_policies" {
+  description = "Additional access policies for Key Vault (list of object IDs)"
+  type = list(object({
+    object_id               = string
+    secret_permissions      = list(string)
+    key_permissions        = list(string)
+    certificate_permissions = list(string)
+  }))
+  default = []
+}

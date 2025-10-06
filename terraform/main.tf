@@ -63,6 +63,139 @@ resource "azurerm_resource_group" "liveeventops" {
     project      = "LiveEventOps"
     managed_by   = "terraform"
     created_date = formatdate("YYYY-MM-DD", timestamp())
+    azd-env-name = var.environment
+  }
+}
+
+# Azure Key Vault for secure secret management
+resource "azurerm_key_vault" "liveeventops" {
+  name                = "${var.project_name}-kv-${random_string.resource_suffix.result}"
+  location            = azurerm_resource_group.liveeventops.location
+  resource_group_name = azurerm_resource_group.liveeventops.name
+  tenant_id           = data.azurerm_client_config.current.tenant_id
+  sku_name            = "standard"
+
+  # Enable soft delete and purge protection for production security
+  soft_delete_retention_days = var.key_vault_soft_delete_retention_days
+  purge_protection_enabled   = var.key_vault_purge_protection_enabled
+
+  # Network access rules for security
+  network_acls {
+    default_action = var.key_vault_network_default_action
+    bypass         = "AzureServices"
+  }
+
+  # Enable RBAC for access control
+  enabled_for_deployment = true
+  enabled_for_template_deployment = true
+
+  tags = {
+    environment  = var.environment
+    project      = "LiveEventOps"
+    managed_by   = "terraform"
+    purpose      = "secret-management"
+    azd-env-name = var.environment
+  }
+}
+
+# Key Vault Access Policy for Terraform Service Principal
+resource "azurerm_key_vault_access_policy" "terraform_sp" {
+  key_vault_id = azurerm_key_vault.liveeventops.id
+  tenant_id    = data.azurerm_client_config.current.tenant_id
+  object_id    = data.azurerm_client_config.current.object_id
+
+  secret_permissions = [
+    "Get",
+    "List",
+    "Set",
+    "Delete",
+    "Recover",
+    "Backup",
+    "Restore",
+    "Purge"
+  ]
+
+  key_permissions = [
+    "Get",
+    "List",
+    "Create",
+    "Delete",
+    "Update",
+    "Import",
+    "Backup",
+    "Restore",
+    "Recover"
+  ]
+
+  certificate_permissions = [
+    "Get",
+    "List",
+    "Create",
+    "Delete",
+    "Update",
+    "Import"
+  ]
+}
+
+# Additional Key Vault access policies for other users/service principals
+resource "azurerm_key_vault_access_policy" "additional" {
+  count = length(var.additional_key_vault_access_policies)
+
+  key_vault_id = azurerm_key_vault.liveeventops.id
+  tenant_id    = data.azurerm_client_config.current.tenant_id
+  object_id    = var.additional_key_vault_access_policies[count.index].object_id
+
+  secret_permissions      = var.additional_key_vault_access_policies[count.index].secret_permissions
+  key_permissions        = var.additional_key_vault_access_policies[count.index].key_permissions
+  certificate_permissions = var.additional_key_vault_access_policies[count.index].certificate_permissions
+}
+
+# Key Vault secrets for VM authentication and monitoring
+resource "azurerm_key_vault_secret" "vm_admin_username" {
+  name         = "vm-admin-username"
+  value        = var.admin_username
+  key_vault_id = azurerm_key_vault.liveeventops.id
+
+  depends_on = [azurerm_key_vault_access_policy.terraform_sp]
+
+  tags = {
+    purpose = "vm-authentication"
+  }
+}
+
+resource "azurerm_key_vault_secret" "ssh_public_key" {
+  name         = "ssh-public-key"
+  value        = var.ssh_public_key
+  key_vault_id = azurerm_key_vault.liveeventops.id
+
+  depends_on = [azurerm_key_vault_access_policy.terraform_sp]
+
+  tags = {
+    purpose = "vm-authentication"
+  }
+}
+
+resource "azurerm_key_vault_secret" "webhook_url" {
+  name         = "monitoring-webhook-url"
+  value        = var.webhook_url != "" ? var.webhook_url : "https://placeholder.example.com/webhook"
+  key_vault_id = azurerm_key_vault.liveeventops.id
+
+  depends_on = [azurerm_key_vault_access_policy.terraform_sp]
+
+  tags = {
+    purpose = "monitoring-integration"
+  }
+}
+
+resource "azurerm_key_vault_secret" "alert_email" {
+  name         = "monitoring-alert-email"
+  value        = var.alert_email
+  key_vault_id = azurerm_key_vault.liveeventops.id
+
+  depends_on = [azurerm_key_vault_access_policy.terraform_sp]
+
+  tags = {
+    purpose = "monitoring-alerts"
   }
 }
 

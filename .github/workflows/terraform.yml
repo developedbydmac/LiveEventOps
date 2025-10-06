@@ -88,7 +88,34 @@ jobs:
     - name: Azure Login
       uses: azure/login@v1
       with:
-        creds: ${{ secrets.AZURE_CREDENTIALS }}
+        client-id: ${{ secrets.AZURE_CLIENT_ID }}
+        tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+        subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+    - name: Get Key Vault secrets
+      id: keyvault
+      run: |
+        # Get Key Vault name from previous deployment (if exists)
+        KV_NAME=$(az keyvault list --resource-group ${{ secrets.TF_STATE_RESOURCE_GROUP }} --query "[?starts_with(name, 'liveeventops-kv')].name" -o tsv | head -1)
+        
+        if [ -n "$KV_NAME" ]; then
+          echo "Found Key Vault: $KV_NAME"
+          
+          # Get secrets from Key Vault if they exist
+          SSH_KEY=$(az keyvault secret show --vault-name "$KV_NAME" --name "ssh-public-key" --query "value" -o tsv 2>/dev/null || echo "")
+          WEBHOOK_URL=$(az keyvault secret show --vault-name "$KV_NAME" --name "monitoring-webhook-url" --query "value" -o tsv 2>/dev/null || echo "")
+          ALERT_EMAIL=$(az keyvault secret show --vault-name "$KV_NAME" --name "monitoring-alert-email" --query "value" -o tsv 2>/dev/null || echo "")
+          
+          # Use Key Vault values if available, otherwise fall back to GitHub secrets
+          echo "ssh-key=${SSH_KEY:-${{ secrets.SSH_PUBLIC_KEY }}}" >> $GITHUB_OUTPUT
+          echo "webhook-url=${WEBHOOK_URL:-${{ secrets.WEBHOOK_URL }}}" >> $GITHUB_OUTPUT
+          echo "alert-email=${ALERT_EMAIL:-admin@liveeventops.com}" >> $GITHUB_OUTPUT
+        else
+          echo "No Key Vault found, using GitHub secrets"
+          echo "ssh-key=${{ secrets.SSH_PUBLIC_KEY }}" >> $GITHUB_OUTPUT
+          echo "webhook-url=${{ secrets.WEBHOOK_URL }}" >> $GITHUB_OUTPUT
+          echo "alert-email=admin@liveeventops.com" >> $GITHUB_OUTPUT
+        fi
 
     - name: Terraform Init
       run: |
@@ -103,7 +130,9 @@ jobs:
       id: plan
       run: |
         terraform plan \
-          -var="ssh_public_key=${{ secrets.SSH_PUBLIC_KEY }}" \
+          -var="ssh_public_key=${{ steps.keyvault.outputs.ssh-key }}" \
+          -var="webhook_url=${{ steps.keyvault.outputs.webhook-url }}" \
+          -var="alert_email=${{ steps.keyvault.outputs.alert-email }}" \
           -var="environment=${{ github.ref_name == 'main' && 'prod' || 'dev' }}" \
           -out=tfplan \
           -detailed-exitcode
@@ -154,7 +183,34 @@ jobs:
     - name: Azure Login
       uses: azure/login@v1
       with:
-        creds: ${{ secrets.AZURE_CREDENTIALS }}
+        client-id: ${{ secrets.AZURE_CLIENT_ID }}
+        tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+        subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+    - name: Get Key Vault secrets
+      id: keyvault
+      run: |
+        # Get Key Vault name from previous deployment (if exists)
+        KV_NAME=$(az keyvault list --resource-group ${{ secrets.TF_STATE_RESOURCE_GROUP }} --query "[?starts_with(name, 'liveeventops-kv')].name" -o tsv | head -1)
+        
+        if [ -n "$KV_NAME" ]; then
+          echo "Found Key Vault: $KV_NAME"
+          
+          # Get secrets from Key Vault if they exist
+          SSH_KEY=$(az keyvault secret show --vault-name "$KV_NAME" --name "ssh-public-key" --query "value" -o tsv 2>/dev/null || echo "")
+          WEBHOOK_URL=$(az keyvault secret show --vault-name "$KV_NAME" --name "monitoring-webhook-url" --query "value" -o tsv 2>/dev/null || echo "")
+          ALERT_EMAIL=$(az keyvault secret show --vault-name "$KV_NAME" --name "monitoring-alert-email" --query "value" -o tsv 2>/dev/null || echo "")
+          
+          # Use Key Vault values if available, otherwise fall back to GitHub secrets
+          echo "ssh-key=${SSH_KEY:-${{ secrets.SSH_PUBLIC_KEY }}}" >> $GITHUB_OUTPUT
+          echo "webhook-url=${WEBHOOK_URL:-${{ secrets.WEBHOOK_URL }}}" >> $GITHUB_OUTPUT
+          echo "alert-email=${ALERT_EMAIL:-admin@liveeventops.com}" >> $GITHUB_OUTPUT
+        else
+          echo "No Key Vault found, using GitHub secrets"
+          echo "ssh-key=${{ secrets.SSH_PUBLIC_KEY }}" >> $GITHUB_OUTPUT
+          echo "webhook-url=${{ secrets.WEBHOOK_URL }}" >> $GITHUB_OUTPUT
+          echo "alert-email=admin@liveeventops.com" >> $GITHUB_OUTPUT
+        fi
 
     - name: Terraform Init
       run: |
@@ -168,7 +224,9 @@ jobs:
     - name: Terraform Plan
       run: |
         terraform plan \
-          -var="ssh_public_key=${{ secrets.SSH_PUBLIC_KEY }}" \
+          -var="ssh_public_key=${{ steps.keyvault.outputs.ssh-key }}" \
+          -var="webhook_url=${{ steps.keyvault.outputs.webhook-url }}" \
+          -var="alert_email=${{ steps.keyvault.outputs.alert-email }}" \
           -var="environment=prod" \
           -out=tfplan
       working-directory: ${{ env.WORKING_DIRECTORY }}
@@ -213,7 +271,34 @@ jobs:
     - name: Azure Login
       uses: azure/login@v1
       with:
-        creds: ${{ secrets.AZURE_CREDENTIALS }}
+        client-id: ${{ secrets.AZURE_CLIENT_ID }}
+        tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+        subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+    - name: Get Key Vault secrets
+      id: keyvault
+      run: |
+        # Get Key Vault name from previous deployment (if exists)
+        KV_NAME=$(az keyvault list --resource-group ${{ secrets.TF_STATE_RESOURCE_GROUP }} --query "[?starts_with(name, 'liveeventops-kv')].name" -o tsv | head -1)
+        
+        if [ -n "$KV_NAME" ]; then
+          echo "Found Key Vault: $KV_NAME"
+          
+          # Get secrets from Key Vault if they exist
+          SSH_KEY=$(az keyvault secret show --vault-name "$KV_NAME" --name "ssh-public-key" --query "value" -o tsv 2>/dev/null || echo "")
+          WEBHOOK_URL=$(az keyvault secret show --vault-name "$KV_NAME" --name "monitoring-webhook-url" --query "value" -o tsv 2>/dev/null || echo "")
+          ALERT_EMAIL=$(az keyvault secret show --vault-name "$KV_NAME" --name "monitoring-alert-email" --query "value" -o tsv 2>/dev/null || echo "")
+          
+          # Use Key Vault values if available, otherwise fall back to GitHub secrets
+          echo "ssh-key=${SSH_KEY:-${{ secrets.SSH_PUBLIC_KEY }}}" >> $GITHUB_OUTPUT
+          echo "webhook-url=${WEBHOOK_URL:-${{ secrets.WEBHOOK_URL }}}" >> $GITHUB_OUTPUT
+          echo "alert-email=${ALERT_EMAIL:-admin@liveeventops.com}" >> $GITHUB_OUTPUT
+        else
+          echo "No Key Vault found, using GitHub secrets"
+          echo "ssh-key=${{ secrets.SSH_PUBLIC_KEY }}" >> $GITHUB_OUTPUT
+          echo "webhook-url=${{ secrets.WEBHOOK_URL }}" >> $GITHUB_OUTPUT
+          echo "alert-email=admin@liveeventops.com" >> $GITHUB_OUTPUT
+        fi
 
     - name: Terraform Init
       run: |
@@ -227,7 +312,9 @@ jobs:
     - name: Terraform Destroy
       run: |
         terraform destroy \
-          -var="ssh_public_key=${{ secrets.SSH_PUBLIC_KEY }}" \
+          -var="ssh_public_key=${{ steps.keyvault.outputs.ssh-key }}" \
+          -var="webhook_url=${{ steps.keyvault.outputs.webhook-url }}" \
+          -var="alert_email=${{ steps.keyvault.outputs.alert-email }}" \
           -var="environment=prod" \
           -auto-approve
       working-directory: ${{ env.WORKING_DIRECTORY }}

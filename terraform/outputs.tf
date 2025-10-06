@@ -184,3 +184,24 @@ output "monitoring_summary" {
     monitored_vms           = 1 + var.camera_count + var.wireless_count + var.printer_count
   }
 }
+
+# Key Vault outputs
+output "key_vault_name" {
+  description = "Name of the Azure Key Vault"
+  value       = azurerm_key_vault.liveeventops.name
+}
+
+output "key_vault_id" {
+  description = "ID of the Azure Key Vault"
+  value       = azurerm_key_vault.liveeventops.id
+}
+
+output "key_vault_uri" {
+  description = "URI of the Azure Key Vault"
+  value       = azurerm_key_vault.liveeventops.vault_uri
+}
+
+output "key_vault_tenant_id" {
+  description = "Tenant ID associated with the Key Vault"
+  value       = azurerm_key_vault.liveeventops.tenant_id
+}
