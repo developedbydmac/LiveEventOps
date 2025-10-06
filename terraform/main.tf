@@ -782,3 +782,335 @@ resource "azurerm_monitor_data_collection_rule" "device_monitoring" {
     managed_by  = "terraform"
   }
 }
+
+# Action Group for Alert Notifications
+resource "azurerm_monitor_action_group" "vm_alerts" {
+  name                = "vm-alerts-${random_string.resource_suffix.result}"
+  resource_group_name = azurerm_resource_group.liveeventops.name
+  short_name          = "vmalerts"
+
+  webhook_receiver {
+    name                    = "github-actions-webhook"
+    service_uri             = var.webhook_url
+    use_common_alert_schema = true
+  }
+
+  email_receiver {
+    name          = "operations-team"
+    email_address = var.alert_email
+  }
+
+  tags = {
+    environment = var.environment
+    project     = "LiveEventOps"
+    managed_by  = "terraform"
+  }
+}
+
+# Diagnostic Settings for Management VM
+resource "azurerm_monitor_diagnostic_setting" "management_vm_diagnostics" {
+  name                       = "management-vm-diagnostics"
+  target_resource_id         = azurerm_linux_virtual_machine.management_vm.id
+  log_analytics_workspace_id = azurerm_log_analytics_workspace.liveeventops_logs.id
+
+  enabled_log {
+    category = "AuditEvent"
+  }
+
+  metric {
+    category = "AllMetrics"
+    enabled  = true
+
+    retention_policy {
+      enabled = true
+      days    = 7
+    }
+  }
+
+  tags = {
+    environment = var.environment
+    project     = "LiveEventOps"
+    managed_by  = "terraform"
+  }
+}
+
+# Diagnostic Settings for Camera VMs
+resource "azurerm_monitor_diagnostic_setting" "camera_vm_diagnostics" {
+  count                      = var.camera_count
+  name                       = "camera-${count.index + 1}-diagnostics"
+  target_resource_id         = azurerm_linux_virtual_machine.camera_vm[count.index].id
+  log_analytics_workspace_id = azurerm_log_analytics_workspace.liveeventops_logs.id
+
+  enabled_log {
+    category = "AuditEvent"
+  }
+
+  metric {
+    category = "AllMetrics"
+    enabled  = true
+
+    retention_policy {
+      enabled = true
+      days    = 7
+    }
+  }
+
+  tags = {
+    environment = var.environment
+    project     = "LiveEventOps"
+    managed_by  = "terraform"
+  }
+}
+
+# Diagnostic Settings for Wireless VMs
+resource "azurerm_monitor_diagnostic_setting" "wireless_vm_diagnostics" {
+  count                      = var.wireless_count
+  name                       = "wireless-${count.index + 1}-diagnostics"
+  target_resource_id         = azurerm_linux_virtual_machine.wireless_vm[count.index].id
+  log_analytics_workspace_id = azurerm_log_analytics_workspace.liveeventops_logs.id
+
+  enabled_log {
+    category = "AuditEvent"
+  }
+
+  metric {
+    category = "AllMetrics"
+    enabled  = true
+
+    retention_policy {
+      enabled = true
+      days    = 7
+    }
+  }
+
+  tags = {
+    environment = var.environment
+    project     = "LiveEventOps"
+    managed_by  = "terraform"
+  }
+}
+
+# Diagnostic Settings for Printer VMs
+resource "azurerm_monitor_diagnostic_setting" "printer_vm_diagnostics" {
+  count                      = var.printer_count
+  name                       = "printer-${count.index + 1}-diagnostics"
+  target_resource_id         = azurerm_linux_virtual_machine.printer_vm[count.index].id
+  log_analytics_workspace_id = azurerm_log_analytics_workspace.liveeventops_logs.id
+
+  enabled_log {
+    category = "AuditEvent"
+  }
+
+  metric {
+    category = "AllMetrics"
+    enabled  = true
+
+    retention_policy {
+      enabled = true
+      days    = 7
+    }
+  }
+
+  tags = {
+    environment = var.environment
+    project     = "LiveEventOps"
+    managed_by  = "terraform"
+  }
+}
+
+# Network Security Group Diagnostic Settings
+resource "azurerm_monitor_diagnostic_setting" "nsg_diagnostics" {
+  for_each = {
+    management = azurerm_network_security_group.management_nsg.id
+    camera     = azurerm_network_security_group.camera_nsg.id
+    wireless   = azurerm_network_security_group.wireless_nsg.id
+    dmz        = azurerm_network_security_group.dmz_nsg.id
+  }
+
+  name                       = "${each.key}-nsg-diagnostics"
+  target_resource_id         = each.value
+  log_analytics_workspace_id = azurerm_log_analytics_workspace.liveeventops_logs.id
+
+  enabled_log {
+    category = "NetworkSecurityGroupEvent"
+  }
+
+  enabled_log {
+    category = "NetworkSecurityGroupRuleCounter"
+  }
+
+  tags = {
+    environment = var.environment
+    project     = "LiveEventOps"
+    managed_by  = "terraform"
+  }
+}
+
+# VM CPU Alert Rules
+resource "azurerm_monitor_metric_alert" "vm_cpu_alert" {
+  for_each = merge(
+    { for i in range(1) : "management" => azurerm_linux_virtual_machine.management_vm.id },
+    { for i in range(var.camera_count) : "camera-${i + 1}" => azurerm_linux_virtual_machine.camera_vm[i].id },
+    { for i in range(var.wireless_count) : "wireless-${i + 1}" => azurerm_linux_virtual_machine.wireless_vm[i].id },
+    { for i in range(var.printer_count) : "printer-${i + 1}" => azurerm_linux_virtual_machine.printer_vm[i].id }
+  )
+
+  name                = "${each.key}-high-cpu"
+  resource_group_name = azurerm_resource_group.liveeventops.name
+  scopes              = [each.value]
+  description         = "Alert when CPU usage exceeds 80% for ${each.key} VM"
+  severity            = 2
+  frequency           = "PT1M"
+  window_size         = "PT5M"
+
+  criteria {
+    metric_namespace = "Microsoft.Compute/virtualMachines"
+    metric_name      = "Percentage CPU"
+    aggregation      = "Average"
+    operator         = "GreaterThan"
+    threshold        = 80
+  }
+
+  action {
+    action_group_id = azurerm_monitor_action_group.vm_alerts.id
+  }
+
+  tags = {
+    environment = var.environment
+    project     = "LiveEventOps"
+    managed_by  = "terraform"
+  }
+}
+
+# VM Memory Alert Rules
+resource "azurerm_monitor_metric_alert" "vm_memory_alert" {
+  for_each = merge(
+    { for i in range(1) : "management" => azurerm_linux_virtual_machine.management_vm.id },
+    { for i in range(var.camera_count) : "camera-${i + 1}" => azurerm_linux_virtual_machine.camera_vm[i].id },
+    { for i in range(var.wireless_count) : "wireless-${i + 1}" => azurerm_linux_virtual_machine.wireless_vm[i].id },
+    { for i in range(var.printer_count) : "printer-${i + 1}" => azurerm_linux_virtual_machine.printer_vm[i].id }
+  )
+
+  name                = "${each.key}-low-memory"
+  resource_group_name = azurerm_resource_group.liveeventops.name
+  scopes              = [each.value]
+  description         = "Alert when available memory is below 100MB for ${each.key} VM"
+  severity            = 1
+  frequency           = "PT1M"
+  window_size         = "PT5M"
+
+  criteria {
+    metric_namespace = "Microsoft.Compute/virtualMachines"
+    metric_name      = "Available Memory Bytes"
+    aggregation      = "Average"
+    operator         = "LessThan"
+    threshold        = 104857600 # 100MB in bytes
+  }
+
+  action {
+    action_group_id = azurerm_monitor_action_group.vm_alerts.id
+  }
+
+  tags = {
+    environment = var.environment
+    project     = "LiveEventOps"
+    managed_by  = "terraform"
+  }
+}
+
+# VM Heartbeat Alert Rules
+resource "azurerm_monitor_scheduled_query_rules_alert_v2" "vm_heartbeat_alert" {
+  for_each = merge(
+    { for i in range(1) : "management" => "management-vm-${random_string.resource_suffix.result}" },
+    { for i in range(var.camera_count) : "camera-${i + 1}" => "camera-${i + 1}-${random_string.resource_suffix.result}" },
+    { for i in range(var.wireless_count) : "wireless-${i + 1}" => "wireless-ap-${i + 1}-${random_string.resource_suffix.result}" },
+    { for i in range(var.printer_count) : "printer-${i + 1}" => "printer-${i + 1}-${random_string.resource_suffix.result}" }
+  )
+
+  name                = "${each.key}-heartbeat-missing"
+  resource_group_name = azurerm_resource_group.liveeventops.name
+  location            = azurerm_resource_group.liveeventops.location
+  description         = "Alert when ${each.key} VM heartbeat is missing"
+  severity            = 0
+
+  evaluation_frequency = "PT5M"
+  window_duration      = "PT10M"
+  scopes               = [azurerm_log_analytics_workspace.liveeventops_logs.id]
+
+  criteria {
+    query = <<-QUERY
+      Heartbeat
+      | where Computer == "${each.value}"
+      | summarize LastHeartbeat = max(TimeGenerated)
+      | where LastHeartbeat < ago(10m)
+    QUERY
+
+    time_aggregation_method = "Count"
+    threshold               = 0
+    operator                = "GreaterThan"
+
+    failing_periods {
+      minimum_failing_periods_to_trigger_alert = 1
+      number_of_evaluation_periods             = 1
+    }
+  }
+
+  action {
+    action_groups = [azurerm_monitor_action_group.vm_alerts.id]
+  }
+
+  tags = {
+    environment = var.environment
+    project     = "LiveEventOps"
+    managed_by  = "terraform"
+  }
+}
+
+# Network Security Group Alert Rules
+resource "azurerm_monitor_scheduled_query_rules_alert_v2" "nsg_blocked_traffic_alert" {
+  for_each = {
+    management = "management-nsg"
+    camera     = "camera-nsg"
+    wireless   = "wireless-nsg"
+    dmz        = "dmz-nsg"
+  }
+
+  name                = "${each.key}-blocked-traffic"
+  resource_group_name = azurerm_resource_group.liveeventops.name
+  location            = azurerm_resource_group.liveeventops.location
+  description         = "Alert when ${each.key} NSG blocks significant traffic"
+  severity            = 2
+
+  evaluation_frequency = "PT5M"
+  window_duration      = "PT15M"
+  scopes               = [azurerm_log_analytics_workspace.liveeventops_logs.id]
+
+  criteria {
+    query = <<-QUERY
+      AzureNetworkAnalytics_CL
+      | where NSGName_s contains "${each.value}"
+      | where FlowStatus_s == "D"
+      | summarize BlockedConnections = count()
+      | where BlockedConnections > 10
+    QUERY
+
+    time_aggregation_method = "Count"
+    threshold               = 0
+    operator                = "GreaterThan"
+
+    failing_periods {
+      minimum_failing_periods_to_trigger_alert = 1
+      number_of_evaluation_periods             = 1
+    }
+  }
+
+  action {
+    action_groups = [azurerm_monitor_action_group.vm_alerts.id]
+  }
+
+  tags = {
+    environment = var.environment
+    project     = "LiveEventOps"
+    managed_by  = "terraform"
+  }
+}

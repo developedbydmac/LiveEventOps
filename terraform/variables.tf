@@ -79,3 +79,16 @@ variable "device_vm_size" {
   type        = string
   default     = "Standard_B1s"
 }
+
+# Monitoring and alerting variables
+variable "webhook_url" {
+  description = "Webhook URL for GitHub Actions integration"
+  type        = string
+  default     = ""
+}
+
+variable "alert_email" {
+  description = "Email address for alert notifications"
+  type        = string
+  default     = "admin@liveeventops.com"
+}

@@ -1,0 +1,387 @@
+name: Incident Response Automation
+
+on:
+  # Manual trigger for testing
+  workflow_dispatch:
+    inputs:
+      action:
+        description: 'Action to perform'
+        required: true
+        default: 'health-check'
+        type: choice
+        options:
+          - health-check
+          - diagnose
+          - restart
+          - logs
+      vm_name:
+        description: 'VM name (optional for health-check)'
+        required: false
+        type: string
+      resource_group:
+        description: 'Resource group (optional, uses default if not specified)'
+        required: false
+        type: string
+  
+  # Webhook trigger from Azure Monitor alerts
+  repository_dispatch:
+    types: [azure-monitor-alert]
+
+env:
+  AZURE_RESOURCE_GROUP: 'liveeventops-rg'
+  LOG_ANALYTICS_WORKSPACE: 'liveeventops-workspace'
+
+jobs:
+  incident-response:
+    runs-on: ubuntu-latest
+    name: Azure VM Incident Response
+    
+    permissions:
+      contents: read
+      id-token: write
+      actions: write
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      
+      - name: Parse alert payload
+        id: parse-alert
+        run: |
+          if [[ "${{ github.event_name }}" == "repository_dispatch" ]]; then
+            echo "Alert triggered by Azure Monitor"
+            
+            # Extract information from the payload
+            ALERT_DATA='${{ toJson(github.event.client_payload) }}'
+            echo "Alert payload: $ALERT_DATA"
+            
+            # Parse alert details
+            ALERT_TYPE=$(echo "$ALERT_DATA" | jq -r '.data.essentials.alertRule // "unknown"')
+            AFFECTED_RESOURCE=$(echo "$ALERT_DATA" | jq -r '.data.essentials.alertTargetIDs[0] // ""')
+            SEVERITY=$(echo "$ALERT_DATA" | jq -r '.data.essentials.severity // "unknown"')
+            
+            # Extract VM name from resource ID
+            VM_NAME=$(echo "$AFFECTED_RESOURCE" | grep -o '/virtualMachines/[^/]*' | cut -d'/' -f3 || echo "")
+            
+            echo "alert-type=$ALERT_TYPE" >> $GITHUB_OUTPUT
+            echo "vm-name=$VM_NAME" >> $GITHUB_OUTPUT
+            echo "severity=$SEVERITY" >> $GITHUB_OUTPUT
+            echo "affected-resource=$AFFECTED_RESOURCE" >> $GITHUB_OUTPUT
+            
+            # Determine action based on alert type and severity
+            if [[ "$SEVERITY" == "0" || "$SEVERITY" == "1" ]]; then
+              echo "action=restart" >> $GITHUB_OUTPUT
+            else
+              echo "action=diagnose" >> $GITHUB_OUTPUT
+            fi
+          else
+            echo "Manual trigger"
+            echo "action=${{ github.event.inputs.action }}" >> $GITHUB_OUTPUT
+            echo "vm-name=${{ github.event.inputs.vm_name }}" >> $GITHUB_OUTPUT
+            echo "resource-group=${{ github.event.inputs.resource_group || env.AZURE_RESOURCE_GROUP }}" >> $GITHUB_OUTPUT
+          fi
+      
+      - name: Set up Azure CLI
+        uses: azure/CLI@v1
+        with:
+          azcliversion: latest
+          inlineScript: |
+            echo "Azure CLI version:"
+            az version
+      
+      - name: Azure Login
+        uses: azure/login@v1
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y jq bc curl
+      
+      - name: Run VM diagnostics
+        id: diagnostics
+        env:
+          AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          LOG_ANALYTICS_WORKSPACE_NAME: ${{ env.LOG_ANALYTICS_WORKSPACE }}
+          WEBHOOK_URL: ${{ secrets.WEBHOOK_URL }}
+        run: |
+          # Set variables based on trigger type
+          if [[ "${{ github.event_name }}" == "repository_dispatch" ]]; then
+            ACTION="${{ steps.parse-alert.outputs.action }}"
+            VM_NAME="${{ steps.parse-alert.outputs.vm-name }}"
+            RESOURCE_GROUP="${{ env.AZURE_RESOURCE_GROUP }}"
+          else
+            ACTION="${{ steps.parse-alert.outputs.action }}"
+            VM_NAME="${{ steps.parse-alert.outputs.vm-name }}"
+            RESOURCE_GROUP="${{ steps.parse-alert.outputs.resource-group }}"
+          fi
+          
+          echo "Running diagnostics with:"
+          echo "  Action: $ACTION"
+          echo "  VM Name: $VM_NAME"
+          echo "  Resource Group: $RESOURCE_GROUP"
+          
+          # Prepare command arguments
+          SCRIPT_ARGS="-g '$RESOURCE_GROUP' -a '$ACTION'"
+          
+          if [[ -n "$VM_NAME" ]]; then
+            SCRIPT_ARGS="$SCRIPT_ARGS -v '$VM_NAME'"
+          fi
+          
+          if [[ -n "$LOG_ANALYTICS_WORKSPACE_NAME" ]]; then
+            SCRIPT_ARGS="$SCRIPT_ARGS -w '$LOG_ANALYTICS_WORKSPACE_NAME'"
+          fi
+          
+          # Run the diagnostics script
+          echo "Executing: ./scripts/vm-diagnostics.sh $SCRIPT_ARGS"
+          eval "./scripts/vm-diagnostics.sh $SCRIPT_ARGS"
+          
+          # Find the output directory
+          OUTPUT_DIR=$(find . -name "diagnostics-*" -type d | head -1)
+          echo "output-dir=$OUTPUT_DIR" >> $GITHUB_OUTPUT
+      
+      - name: Parse diagnostics results
+        id: results
+        run: |
+          OUTPUT_DIR="${{ steps.diagnostics.outputs.output-dir }}"
+          
+          if [[ -z "$OUTPUT_DIR" || ! -d "$OUTPUT_DIR" ]]; then
+            echo "No diagnostics output found"
+            exit 1
+          fi
+          
+          echo "Analyzing results in $OUTPUT_DIR"
+          
+          # Parse health check summary if available
+          if [[ -f "$OUTPUT_DIR/health_check_summary.json" ]]; then
+            SUMMARY=$(cat "$OUTPUT_DIR/health_check_summary.json")
+            UNHEALTHY_COUNT=$(echo "$SUMMARY" | jq -r '.unhealthy_vms')
+            UNHEALTHY_VMS=$(echo "$SUMMARY" | jq -r '.unhealthy_vm_list[]' | tr '\n' ',' | sed 's/,$//')
+            
+            echo "unhealthy-count=$UNHEALTHY_COUNT" >> $GITHUB_OUTPUT
+            echo "unhealthy-vms=$UNHEALTHY_VMS" >> $GITHUB_OUTPUT
+          fi
+          
+          # Parse individual VM health if available
+          VM_NAME="${{ steps.parse-alert.outputs.vm-name }}"
+          if [[ -n "$VM_NAME" && -f "$OUTPUT_DIR/${VM_NAME}_health_analysis.json" ]]; then
+            HEALTH_ANALYSIS=$(cat "$OUTPUT_DIR/${VM_NAME}_health_analysis.json")
+            HEALTH_SCORE=$(echo "$HEALTH_ANALYSIS" | jq -r '.health_score')
+            HEALTH_STATUS=$(echo "$HEALTH_ANALYSIS" | jq -r '.status')
+            ISSUES=$(echo "$HEALTH_ANALYSIS" | jq -r '.issues[]' | tr '\n' ',' | sed 's/,$//')
+            
+            echo "health-score=$HEALTH_SCORE" >> $GITHUB_OUTPUT
+            echo "health-status=$HEALTH_STATUS" >> $GITHUB_OUTPUT
+            echo "health-issues=$ISSUES" >> $GITHUB_OUTPUT
+          fi
+      
+      - name: Create incident report
+        id: report
+        run: |
+          OUTPUT_DIR="${{ steps.diagnostics.outputs.output-dir }}"
+          TIMESTAMP=$(date -u +"%Y-%m-%d %H:%M:%S UTC")
+          
+          # Create GitHub issue body
+          ISSUE_BODY="# 🚨 LiveEventOps Incident Report
+          
+          **Timestamp:** $TIMESTAMP
+          **Trigger:** ${{ github.event_name }}
+          **Action Performed:** ${{ steps.parse-alert.outputs.action }}
+          
+          ## Alert Details
+          "
+          
+          if [[ "${{ github.event_name }}" == "repository_dispatch" ]]; then
+            ISSUE_BODY="$ISSUE_BODY
+          - **Alert Type:** ${{ steps.parse-alert.outputs.alert-type }}
+          - **Severity:** ${{ steps.parse-alert.outputs.severity }}
+          - **Affected Resource:** ${{ steps.parse-alert.outputs.affected-resource }}
+          - **VM Name:** ${{ steps.parse-alert.outputs.vm-name }}
+          "
+          else
+            ISSUE_BODY="$ISSUE_BODY
+          - **Manual Trigger**
+          - **VM Name:** ${{ steps.parse-alert.outputs.vm-name }}
+          - **Resource Group:** ${{ steps.parse-alert.outputs.resource-group }}
+          "
+          fi
+          
+          ISSUE_BODY="$ISSUE_BODY
+          
+          ## Diagnostics Results
+          "
+          
+          # Add health check results
+          if [[ -n "${{ steps.results.outputs.unhealthy-count }}" ]]; then
+            ISSUE_BODY="$ISSUE_BODY
+          - **Unhealthy VMs:** ${{ steps.results.outputs.unhealthy-count }}
+          - **Unhealthy VM List:** ${{ steps.results.outputs.unhealthy-vms }}
+          "
+          fi
+          
+          # Add individual VM health
+          if [[ -n "${{ steps.results.outputs.health-score }}" ]]; then
+            ISSUE_BODY="$ISSUE_BODY
+          - **VM Health Score:** ${{ steps.results.outputs.health-score }}/100
+          - **VM Status:** ${{ steps.results.outputs.health-status }}
+          - **Issues Found:** ${{ steps.results.outputs.health-issues }}
+          "
+          fi
+          
+          ISSUE_BODY="$ISSUE_BODY
+          
+          ## Actions Taken
+          
+          ✅ Diagnostics completed
+          ✅ VM metrics analyzed
+          ✅ Log analysis performed
+          "
+          
+          if [[ "${{ steps.parse-alert.outputs.action }}" == "restart" ]]; then
+            ISSUE_BODY="$ISSUE_BODY
+          ✅ VM restart attempted (if unhealthy)
+          "
+          fi
+          
+          ISSUE_BODY="$ISSUE_BODY
+          
+          ## Diagnostic Files
+          
+          The following diagnostic files were generated:
+          "
+          
+          # List diagnostic files
+          if [[ -d "$OUTPUT_DIR" ]]; then
+            for file in "$OUTPUT_DIR"/*; do
+              if [[ -f "$file" ]]; then
+                FILENAME=$(basename "$file")
+                ISSUE_BODY="$ISSUE_BODY
+          - \`$FILENAME\`"
+              fi
+            done
+          fi
+          
+          ISSUE_BODY="$ISSUE_BODY
+          
+          ## Next Steps
+          
+          "
+          
+          # Recommend next steps based on results
+          if [[ "${{ steps.results.outputs.health-status }}" == "unhealthy" ]]; then
+            ISSUE_BODY="$ISSUE_BODY
+          🔴 **CRITICAL:** VM requires manual intervention
+          - Check VM console logs
+          - Verify network connectivity
+          - Consider manual restart if auto-restart failed
+          "
+          elif [[ "${{ steps.results.outputs.health-status }}" == "degraded" ]]; then
+            ISSUE_BODY="$ISSUE_BODY
+          🟡 **WARNING:** VM performance degraded
+          - Monitor VM performance metrics
+          - Consider resource scaling if needed
+          - Schedule maintenance window for investigation
+          "
+          else
+            ISSUE_BODY="$ISSUE_BODY
+          🟢 **INFO:** VM appears healthy after analysis
+          - Continue monitoring
+          - Review alert thresholds if false positive
+          "
+          fi
+          
+          ISSUE_BODY="$ISSUE_BODY
+          
+          ---
+          *This incident report was automatically generated by the LiveEventOps incident response system.*
+          *Workflow run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}*
+          "
+          
+          # Save issue body to file for upload
+          echo "$ISSUE_BODY" > incident-report.md
+          echo "issue-body<<EOF" >> $GITHUB_OUTPUT
+          echo "$ISSUE_BODY" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+      
+      - name: Upload diagnostic artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: diagnostic-results-${{ github.run_id }}
+          path: |
+            ${{ steps.diagnostics.outputs.output-dir }}/*
+            incident-report.md
+          retention-days: 30
+      
+      - name: Create GitHub issue for critical incidents
+        if: |
+          (steps.results.outputs.health-status == 'unhealthy' || 
+           steps.results.outputs.unhealthy-count > 0) &&
+          github.event_name == 'repository_dispatch'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const issueTitle = `🚨 Critical Incident: VM Health Alert - ${new Date().toISOString()}`;
+            const issueBody = `${{ steps.report.outputs.issue-body }}`;
+            
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: issueTitle,
+              body: issueBody,
+              labels: ['incident', 'critical', 'automated']
+            });
+      
+      - name: Send notification
+        if: always()
+        run: |
+          # Send notification about the incident response
+          if [[ -n "${{ secrets.WEBHOOK_URL }}" ]]; then
+            STATUS="${{ job.status }}"
+            ACTION="${{ steps.parse-alert.outputs.action }}"
+            VM_NAME="${{ steps.parse-alert.outputs.vm-name }}"
+            
+            PAYLOAD=$(cat << EOF
+          {
+            "title": "Incident Response Completed",
+            "message": "Automated incident response completed with status: $STATUS",
+            "details": {
+              "action": "$ACTION",
+              "vm_name": "$VM_NAME",
+              "status": "$STATUS",
+              "workflow_run": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            },
+            "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          }
+          EOF
+          )
+            
+            curl -X POST \
+              -H "Content-Type: application/json" \
+              -d "$PAYLOAD" \
+              "${{ secrets.WEBHOOK_URL }}" || echo "Failed to send notification"
+          fi
+      
+      - name: Summary
+        if: always()
+        run: |
+          echo "## 🔍 Incident Response Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Action:** ${{ steps.parse-alert.outputs.action }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Status:** ${{ job.status }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          if [[ -n "${{ steps.results.outputs.health-score }}" ]]; then
+            echo "**VM Health Score:** ${{ steps.results.outputs.health-score }}/100" >> $GITHUB_STEP_SUMMARY
+            echo "**VM Status:** ${{ steps.results.outputs.health-status }}" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          if [[ -n "${{ steps.results.outputs.unhealthy-count }}" ]]; then
+            echo "**Unhealthy VMs:** ${{ steps.results.outputs.unhealthy-count }}" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Diagnostic artifacts uploaded:** ✅" >> $GITHUB_STEP_SUMMARY
+          echo "**Run ID:** ${{ github.run_id }}" >> $GITHUB_STEP_SUMMARY
