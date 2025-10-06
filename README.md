@@ -359,6 +359,390 @@ const EventDashboard = {
 | Network | Network Watcher | ServiceNow | Network diagnostics |
 | Security | Azure Sentinel | Security Team | Incident response |
 
+## How to Deploy, Monitor, and Troubleshoot This Solution
+
+### 🚀 Deployment Guide
+
+#### Prerequisites
+- Azure CLI installed and authenticated
+- Terraform 1.6+ or Azure CLI with Bicep
+- GitHub repository with Actions enabled
+- Azure subscription with necessary permissions
+
+#### Initial Setup
+```bash
+# 1. Clone the repository
+git clone https://github.com/developedbydmac/LiveEventOps.git
+cd LiveEventOps
+
+# 2. Configure Azure authentication
+az login
+az account set --subscription "your-subscription-id"
+
+# 3. Create service principal for automation
+az ad sp create-for-rbac --name "LiveEventOps-SP" \
+  --role="Contributor" \
+  --scopes="/subscriptions/your-subscription-id"
+```
+
+#### Infrastructure Deployment with Terraform
+
+```bash
+# Navigate to Terraform directory
+cd terraform
+
+# Initialize Terraform backend
+terraform init \
+  -backend-config="resource_group_name=liveeventops-tfstate-rg" \
+  -backend-config="storage_account_name=liveeventopstfstate" \
+  -backend-config="container_name=tfstate" \
+  -backend-config="key=liveeventops.terraform.tfstate"
+
+# Review and customize variables
+cp terraform.tfvars.example terraform.tfvars
+# Edit terraform.tfvars with your specific values
+
+# Plan infrastructure deployment
+terraform plan -out=tfplan
+
+# Apply infrastructure changes
+terraform apply tfplan
+```
+
+#### Infrastructure Deployment with Bicep
+
+```bash
+# Navigate to Bicep directory
+cd bicep
+
+# Deploy main infrastructure template
+az deployment group create \
+  --resource-group liveeventops-rg \
+  --template-file main.bicep \
+  --parameters @parameters.json
+
+# Verify deployment status
+az deployment group show \
+  --resource-group liveeventops-rg \
+  --name main
+```
+
+#### GitHub Actions CI/CD Setup
+
+1. **Configure Repository Secrets**:
+   ```bash
+   # Required secrets for GitHub Actions
+   AZURE_CLIENT_ID=your-service-principal-client-id
+   AZURE_TENANT_ID=your-azure-tenant-id
+   AZURE_SUBSCRIPTION_ID=your-azure-subscription-id
+   TF_STATE_RESOURCE_GROUP=liveeventops-tfstate-rg
+   TF_STATE_STORAGE_ACCOUNT=liveeventopstfstate
+   TF_STATE_CONTAINER=tfstate
+   SSH_PUBLIC_KEY=your-ssh-public-key
+   ```
+
+2. **Trigger Initial Deployment**:
+   ```bash
+   # Push changes to trigger automated deployment
+   git add .
+   git commit -m "feat: Initial infrastructure deployment"
+   git push origin main
+   ```
+
+3. **Manual Deployment (if needed)**:
+   - Navigate to GitHub Actions tab
+   - Select "Terraform Infrastructure" workflow
+   - Click "Run workflow" and choose "apply"
+
+#### Post-Deployment Configuration
+
+```bash
+# Retrieve Key Vault name and configure secrets
+KV_NAME=$(az keyvault list --resource-group liveeventops-rg \
+  --query "[0].name" -o tsv)
+
+# Set up Key Vault secrets
+./scripts/setup-key-vault.sh setup-access
+./scripts/setup-key-vault.sh migrate-secrets
+
+# Verify infrastructure deployment
+terraform output -json > infrastructure-outputs.json
+```
+
+### 📊 Monitoring and Observability
+
+#### Azure Monitor Configuration
+
+**1. Enable Application Insights**:
+```bash
+# Create Application Insights workspace
+az monitor app-insights component create \
+  --app liveeventops-insights \
+  --location eastus \
+  --resource-group liveeventops-rg \
+  --workspace /subscriptions/your-subscription-id/resourceGroups/liveeventops-rg/providers/Microsoft.OperationalInsights/workspaces/liveeventops-logs
+```
+
+**2. Configure Log Analytics Workspace**:
+```bash
+# Query infrastructure logs
+az monitor log-analytics query \
+  --workspace liveeventops-logs \
+  --analytics-query "
+    AzureActivity
+    | where TimeGenerated > ago(24h)
+    | where ResourceGroup == 'liveeventops-rg'
+    | summarize count() by OperationName
+  "
+```
+
+**3. Set up Custom Dashboards**:
+```bash
+# Deploy monitoring dashboard
+az portal dashboard import \
+  --input-path monitoring/dashboards/liveeventops-dashboard.json \
+  --resource-group liveeventops-rg
+```
+
+#### Key Monitoring Metrics
+
+**Infrastructure Health**:
+```kusto
+// VM Performance Monitoring
+Perf
+| where TimeGenerated > ago(1h)
+| where ObjectName == "Processor" and CounterName == "% Processor Time"
+| where Computer startswith "liveeventops"
+| summarize avg(CounterValue) by Computer, bin(TimeGenerated, 5m)
+```
+
+**Application Performance**:
+```kusto
+// Application Response Times
+requests
+| where timestamp > ago(24h)
+| where cloud_RoleName contains "liveeventops"
+| summarize avg(duration), percentile(duration, 95) by bin(timestamp, 1h)
+```
+
+**Security Events**:
+```kusto
+// Key Vault Access Monitoring
+KeyVaultData
+| where TimeGenerated > ago(24h)
+| where ResourceGroup == "liveeventops-rg"
+| summarize count() by OperationName, CallerIpAddress
+```
+
+#### Alerting Configuration
+
+**1. Infrastructure Alerts**:
+```bash
+# VM CPU utilization alert
+az monitor metrics alert create \
+  --name "High CPU Usage" \
+  --resource-group liveeventops-rg \
+  --scopes /subscriptions/your-subscription-id/resourceGroups/liveeventops-rg/providers/Microsoft.Compute/virtualMachines/liveeventops-mgmt-vm \
+  --condition "avg Percentage CPU > 80" \
+  --window-size 5m \
+  --evaluation-frequency 1m \
+  --action /subscriptions/your-subscription-id/resourceGroups/liveeventops-rg/providers/microsoft.insights/actionGroups/liveeventops-alerts
+```
+
+**2. Application Alerts**:
+```bash
+# Application availability alert
+az monitor metrics alert create \
+  --name "Application Unavailable" \
+  --resource-group liveeventops-rg \
+  --scopes /subscriptions/your-subscription-id/resourceGroups/liveeventops-rg/providers/microsoft.insights/components/liveeventops-insights \
+  --condition "avg availability_results/availabilityPercentage < 95" \
+  --window-size 5m \
+  --evaluation-frequency 1m
+```
+
+**3. Cost Management Alerts**:
+```bash
+# Budget alert configuration
+az consumption budget create \
+  --budget-name "LiveEventOps-Monthly-Budget" \
+  --amount 500 \
+  --time-grain Monthly \
+  --time-period start-date=2025-10-01 \
+  --resource-group liveeventops-rg
+```
+
+### 🔧 Troubleshooting Guide
+
+#### Common Issues and Solutions
+
+**1. Terraform Deployment Failures**
+
+*Issue*: `Error: Authorization failed when calling Azure Resource Manager`
+```bash
+# Solution: Verify service principal permissions
+az role assignment list --assignee your-service-principal-id
+az role assignment create \
+  --assignee your-service-principal-id \
+  --role "Contributor" \
+  --scope "/subscriptions/your-subscription-id"
+```
+
+*Issue*: `Error: Backend configuration changed`
+```bash
+# Solution: Reinitialize Terraform backend
+rm -rf .terraform
+terraform init -reconfigure \
+  -backend-config="resource_group_name=liveeventops-tfstate-rg" \
+  -backend-config="storage_account_name=liveeventopstfstate"
+```
+
+**2. GitHub Actions Pipeline Issues**
+
+*Issue*: `Azure login failed`
+```bash
+# Solution: Verify GitHub secrets and recreate service principal
+az ad sp create-for-rbac --name "LiveEventOps-GitHub-SP" \
+  --role="Contributor" \
+  --scopes="/subscriptions/your-subscription-id" \
+  --sdk-auth
+```
+
+*Issue*: `Key Vault access denied`
+```bash
+# Solution: Configure Key Vault access policies
+./scripts/setup-key-vault.sh setup-access
+./scripts/setup-key-vault.sh verify-access
+```
+
+**3. Infrastructure Connectivity Issues**
+
+*Issue*: Cannot SSH to management VM
+```bash
+# Troubleshooting steps:
+# 1. Check NSG rules
+az network nsg rule list \
+  --resource-group liveeventops-rg \
+  --nsg-name liveeventops-mgmt-nsg
+
+# 2. Verify VM is running
+az vm get-instance-view \
+  --resource-group liveeventops-rg \
+  --name liveeventops-mgmt-vm
+
+# 3. Check public IP assignment
+az network public-ip show \
+  --resource-group liveeventops-rg \
+  --name liveeventops-mgmt-pip
+```
+
+**4. Application Performance Issues**
+
+*Issue*: High response times or application errors
+```bash
+# Diagnostic steps:
+# 1. Check Application Insights logs
+az monitor app-insights query \
+  --app liveeventops-insights \
+  --analytics-query "
+    exceptions
+    | where timestamp > ago(1h)
+    | summarize count() by problemId, message
+  "
+
+# 2. Review VM performance metrics
+az monitor metrics list \
+  --resource /subscriptions/your-subscription-id/resourceGroups/liveeventops-rg/providers/Microsoft.Compute/virtualMachines/liveeventops-mgmt-vm \
+  --metric "Percentage CPU"
+
+# 3. Check storage performance
+az monitor metrics list \
+  --resource /subscriptions/your-subscription-id/resourceGroups/liveeventops-rg/providers/Microsoft.Storage/storageAccounts/liveeventopsstrg \
+  --metric "Transactions"
+```
+
+#### Emergency Response Procedures
+
+**1. Service Outage Response**:
+```bash
+# Immediate actions for service outage
+# 1. Check service health
+az resource list --resource-group liveeventops-rg --query "[].{Name:name, Status:properties.provisioningState}"
+
+# 2. Review recent deployments
+az deployment group list --resource-group liveeventops-rg --query "[0:5].{Name:name, Status:properties.provisioningState, Timestamp:properties.timestamp}"
+
+# 3. Rollback if necessary
+git revert HEAD
+git push origin main  # Triggers automatic rollback via GitHub Actions
+```
+
+**2. Security Incident Response**:
+```bash
+# Security incident procedures
+# 1. Review Key Vault access logs
+az keyvault list-deleted --resource-type vault
+az monitor activity-log list --correlation-id incident-correlation-id
+
+# 2. Rotate compromised secrets
+./scripts/setup-key-vault.sh rotate-secrets
+
+# 3. Review NSG logs for suspicious activity
+az network watcher flow-log show \
+  --resource-group NetworkWatcherRG \
+  --name liveeventops-flow-log
+```
+
+**3. Performance Degradation Response**:
+```bash
+# Performance troubleshooting workflow
+# 1. Scale up critical resources
+az vm resize \
+  --resource-group liveeventops-rg \
+  --name liveeventops-mgmt-vm \
+  --size Standard_D4s_v3
+
+# 2. Enable boot diagnostics
+az vm boot-diagnostics enable \
+  --resource-group liveeventops-rg \
+  --name liveeventops-mgmt-vm
+
+# 3. Collect performance data
+az vm run-command invoke \
+  --resource-group liveeventops-rg \
+  --name liveeventops-mgmt-vm \
+  --command-id RunShellScript \
+  --scripts "top -n 1; df -h; free -m"
+```
+
+#### Monitoring and Health Checks
+
+**Automated Health Verification**:
+```bash
+# Create comprehensive health check script
+./scripts/health-check.sh --full-check
+./scripts/health-check.sh --infrastructure-only
+./scripts/health-check.sh --application-only
+```
+
+**Performance Baseline Monitoring**:
+```bash
+# Establish performance baselines
+az monitor metrics list-definitions \
+  --resource /subscriptions/your-subscription-id/resourceGroups/liveeventops-rg/providers/Microsoft.Compute/virtualMachines/liveeventops-mgmt-vm
+
+# Set up custom metric collections
+az monitor log-analytics workspace create \
+  --resource-group liveeventops-rg \
+  --workspace-name liveeventops-performance-logs
+```
+
+**Documentation and Runbooks**:
+- **[Infrastructure Runbook](docs/infrastructure-runbook.md)**: Step-by-step operational procedures
+- **[Security Playbook](docs/security-playbook.md)**: Security incident response procedures  
+- **[Performance Tuning Guide](docs/performance-tuning.md)**: Optimization recommendations
+- **[Cost Optimization Guide](docs/cost-optimization.md)**: Cost management strategies
+
 ## Getting Started
 
 1. **Clone Repository**: Access infrastructure templates and automation scripts
