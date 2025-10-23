@@ -1,0 +1,24 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "environment": {
+      "value": "dev"
+    },
+    "location": {
+      "value": "eastus"
+    },
+    "sshPublicKey": {
+      "value": "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQC7... (replace with your SSH public key)"
+    },
+    "webhookUrl": {
+      "value": ""
+    },
+    "alertEmail": {
+      "value": "admin@liveeventops.com"
+    },
+    "prefix": {
+      "value": "liveeventops"
+    }
+  }
+}

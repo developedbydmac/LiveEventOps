@@ -9,8 +9,9 @@ __pycache__/
 *.tfstate
 *.tfstate.backup
 .terraform/
-# Bicep
-*.bicep
+# Bicep compiled output (allow source files)
+main.json
+*-outputs.json
 # CI/CD
 *.log
 # Media
